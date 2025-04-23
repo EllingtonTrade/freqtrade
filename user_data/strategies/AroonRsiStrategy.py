@@ -5,9 +5,9 @@ import numpy as np
 import pandas as pd
 
 
-class MomentumBreakoutStrategy(IStrategy):
-    timeframe = '4h'
-    can_short = False
+class AroonRsiStrategy(IStrategy):
+    timeframe = '1h'
+    can_short = True
     use_custom_stoploss = True
     use_custom_exit = True
     custom_stop = {}

@@ -97,7 +97,7 @@ target/
 .venv
 .idea
 .vscode
-
+*.csv
 .pytest_cache/
 .mypy_cache/
 
