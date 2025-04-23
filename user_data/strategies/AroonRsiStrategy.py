@@ -36,6 +36,14 @@ class AroonRsiStrategy(IStrategy):
             "Aroon": {
                 'aroon_up': {'color': 'green', 'linewidth': 1},
                 'aroon_down': {'color': 'red', 'linewidth': 1}
+            },
+             "buy_sell_plot": {
+                "enter_long": {"color": "green", "marker": "v", "markersize": 10},
+                "exit_long": {"color": "red", "marker": "^", "markersize": 10},
+            },
+             "stop_loss_roi_plot": {
+                "stop_loss": {"color": "orange", "linewidth": 1, "linestyle": "--"},
+                "roi": {"color": "purple", "linewidth": 1, "linestyle": ":"}
             }
         }
     }
