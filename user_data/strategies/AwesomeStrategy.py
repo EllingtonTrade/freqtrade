@@ -1,4 +1,4 @@
-from freqtrade.strategy import IStrategy
+from freqtrade.strategy import IStrategy,DecimalParameter
 from pandas import DataFrame
 import talib.abstract as ta
 import freqtrade.vendor.qtpylib.indicators as qtpylib
@@ -9,72 +9,69 @@ import matplotlib.pyplot as plt
 
 from scipy.optimize import minimize_scalar
 import numpy as np
-def view(df, support_lines=None, resist_lines=None):
+import pandas as pd
+import plotly.graph_objects as go
+import numpy as np
 
-    import plotly.graph_objects as go
-
+def view(df, output_path=None):
+    """
+    Visualizes the candlestick chart with EMA lines and entry/exit points.
+    
+    :param df: DataFrame containing the candlestick data ('date', 'open', 'high', 'low', 'close', 'ema7', 'ema17', 'enter_long', 'exit_long')
+    :param output_path: The file path to save the generated chart (if None, the chart won't be saved to a file)
+    """
+    
     df['date'] = pd.to_datetime(df['date'])
 
-    fig = go.Figure(data=[
-        go.Candlestick(
-            x=df['date'],
-            open=df['open'],
-            high=df['high'],
-            low=df['low'],
-            close=df['close'],
-            name='Price'
-        )
-    ])
+    # Initialize the figure with a candlestick chart
+    fig = go.Figure(data=[go.Candlestick(
+        x=df['date'],
+        open=df['open'],
+        high=df['high'],
+        low=df['low'],
+        close=df['close'],
+        name='Price'
+    )])
 
+    # Add EMA7 line (Blue)
     fig.add_trace(go.Scatter(
         x=df['date'],
-        y=df['support'].where(df['support'] > 0),
-        mode='markers',
-        name='Support',
-        marker=dict(color='green', size=5, symbol='triangle-down')
+        y=df['ema7'],
+        mode='lines',
+        name='EMA7',
+        line=dict(color='blue')
     ))
 
+    # Add EMA17 line (Red)
     fig.add_trace(go.Scatter(
         x=df['date'],
-        y=df['resistance'].where(df['resistance'] > 0),
-        mode='markers',
-        name='Resistance',
-        marker=dict(color='red', size=5, symbol='triangle-up')
+        y=df['ema17'],
+        mode='lines',
+        name='EMA17',
+        line=dict(color='red')
     ))
 
-    # Draw trendlines if provided
-    if support_lines:
-        for start_date, end_date, (slope, intercept) in support_lines:
-            range_df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
-            if len(range_df) > 0:
-                x_vals = range_df['date']
-                x_idx = np.arange(len(x_vals))
-                y_vals = slope * x_idx + intercept
-                fig.add_trace(go.Scatter(
-                    x=x_vals,
-                    y=y_vals,
-                    mode='lines',
-                    line=dict(color='lightblue', dash='dot'),
-                    name='Support Trendline'
-                ))
+    # Add entry points (green triangles down)
+    fig.add_trace(go.Scatter(
+        x=df['date'],
+        y=df['close'].where(df['enter_long'] == 1),
+        mode='markers',
+        name='Enter Long',
+        marker=dict(color='green', size=7, symbol='triangle-down')
+    ))
 
-    if resist_lines:
-        for start_date, end_date, (slope, intercept) in resist_lines:
-            range_df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
-            if len(range_df) > 0:
-                x_vals = range_df['date']
-                x_idx = np.arange(len(x_vals))
-                y_vals = slope * x_idx + intercept
-                fig.add_trace(go.Scatter(
-                    x=x_vals,
-                    y=y_vals,
-                    mode='lines',
-                    line=dict(color='orange', dash='dot'),
-                    name='Resistance Trendline'
-                ))
+    # Add exit points (red triangles up)
+    fig.add_trace(go.Scatter(
+        x=df['date'],
+        y=df['close'].where(df['exit_long'] == 1),
+        mode='markers',
+        name='Exit Long',
+        marker=dict(color='red', size=7, symbol='triangle-up')
+    ))
 
+    # Update layout of the chart
     fig.update_layout(
-        title='Candlestick Chart with Support/Resistance & Trendlines',
+        title='Candlestick Chart with EMA and Trade Signals',
         xaxis_title='Date',
         yaxis_title='Price',
         xaxis_rangeslider_visible=False,
@@ -82,9 +79,18 @@ def view(df, support_lines=None, resist_lines=None):
         height=700
     )
 
-    fig.write_html("C:\\Users\\HATEF\\Desktop\\plots\\candlestick_with_sr.html")
+    # Save the plot if output_path is provided
+    if output_path:
+        fig.write_html(output_path)
+        print(f"Chart saved to {output_path}")
 
+    # Show the plot
+    fig.show()
 
+# Example usage:
+# df should have 'date', 'open', 'high', 'low', 'close', 'ema7', 'ema17', 'enter_long', 'exit_long' columns
+# view(df, output_path='candlestick_with_ema_and_trades.html')
+import numpy as np  
 def check_trend_line(support: bool, pivot: int, slope: float, y: np.array):
     # compute sum of differences between line and prices, 
     # return negative val if invalid 
@@ -224,9 +230,35 @@ class AwesomeStrategy(IStrategy):
 
     # Define the minimal ROI and stoploss
     minimal_roi = {
-        "0": 0.1
+        "0": 100.0
     }
-    stoploss = -0.1
+    can_short = False
+    use_custom_stoploss = True
+    use_custom_exit = True
+    custom_stop = {}
+    trailing_sl_threshold = DecimalParameter(0.0, 4.0, decimals=1, default=1.2, space='buy')
+    sl_coef = DecimalParameter(0.0, 4.0, decimals=1, default=1.9, space='buy')
+    tp_threshold = DecimalParameter(0.5, 4.0, decimals=1, default=1.0, space='buy')
+    
+    risk_exposure = 0.05 # 1%
+
+    plot_config = {
+        "main_plot": {
+            "ema7": {"color": "blue", "linewidth": 2},
+            "ema17": {"color": "red", "linewidth": 2},
+        },
+        "subplots": {
+            "buy_sell_plot": {
+                "enter_long": {"color": "green", "marker": "v", "markersize": 10},
+                "exit_long": {"color": "red", "marker": "^", "markersize": 10},
+            },
+            "stop_loss_roi_plot": {
+                "stop_loss": {"color": "orange", "linewidth": 1, "linestyle": "--"},
+                "roi": {"color": "purple", "linewidth": 1, "linestyle": ":"}
+            }
+        }
+    }
+    stoploss = -1.0
 
     # Define the timeframe
     timeframe = '4h'
@@ -236,29 +268,32 @@ class AwesomeStrategy(IStrategy):
         Add EMA indicators to the dataframe.
         """
         # Calculate EMA7
-        dataframe['ema7'] = ta.EMA(dataframe['close'], timeperiod=7)
+        dataframe['ema7'] = ta.EMA(dataframe['close'], timeperiod=3)
         # Calculate EMA17
-        dataframe['ema17'] = ta.EMA(dataframe['close'], timeperiod=17)
+        dataframe['ema17'] = ta.EMA(dataframe['close'], timeperiod=20)
+        dataframe['avg_range'] = (dataframe['high'] - dataframe['low']).rolling(window=30).mean()
         return dataframe
     
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         """
         Define entry conditions: when EMA7 crosses above EMA17.
         """
-        dataframe['support'] = np.where(dataframe['low'] == dataframe['low'].rolling(5, center=True).min(), dataframe['low'], 0)
+        # dataframe['support'] = np.where(dataframe['low'] == dataframe['low'].rolling(5, center=True).min(), dataframe['low'], 0)
 
-        # Resistance level: Local maxima in the 'High' price over a rolling window
-        dataframe['resistance'] = np.where(dataframe['high'] == dataframe['high'].rolling(5, center=True).max(), dataframe['high'], 0)
+        # # Resistance level: Local maxima in the 'High' price over a rolling window
+        # dataframe['resistance'] = np.where(dataframe['high'] == dataframe['high'].rolling(5, center=True).max(), dataframe['high'], 0)
         
-        support_lines, resist_lines= chunk_trendlines(dataframe,180)
-        view(dataframe, support_lines=support_lines, resist_lines=resist_lines)
-        input("Press any key to continue...")
+        # support_lines, resist_lines= chunk_trendlines(dataframe,180)
+        # view(dataframe, support_lines=support_lines, resist_lines=resist_lines)
+        # input("Press any key to continue...")
         dataframe.loc[
             (
                 qtpylib.crossed_above(dataframe['ema7'], dataframe['ema17'])
             ),
             'enter_long'
         ] = 1
+        # dataframe.to_csv(r"C:\Users\HATEF\Desktop\plots\a.csv", index=False)
+  # or dataframe.to_pickle('your_dataframe.pkl')
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
@@ -271,4 +306,46 @@ class AwesomeStrategy(IStrategy):
             ),
             'exit_long'
         ] = 1
+        # view(dataframe, output_path="C:\\Users\\HATEF\\Desktop\\plots\\candlestick_with_ema_and_trades.html")
         return dataframe
+    
+    def custom_stoploss(self, pair: str, trade, current_time, current_rate, current_profit, **kwargs) -> float:
+        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+        df = dataframe[dataframe['date'] <= current_time].copy()
+
+        if df.empty:
+            return -0.99
+
+        entry_candle = df[df['date'] <= trade.open_date_utc].iloc[-1]
+        avg_range = entry_candle['avg_range']
+        if avg_range == 0 or np.isnan(avg_range):
+            return -0.99
+
+        sl_price = trade.open_rate - self.sl_coef.value * avg_range
+
+        profit_trigger = self.trailing_sl_threshold.value * avg_range / trade.open_rate
+        if current_profit < profit_trigger:
+            sl_percentage = (sl_price / current_rate) - 1
+            return max(sl_percentage, -0.99)
+
+        df = df[df['date'] >= trade.open_date_utc + pd.Timedelta(minutes=self.timeframe_to_minutes(self.timeframe))].copy()
+        df['higher_low'] = df['low'] > df['low'].shift(1)
+        df['prev_low'] = df['low'].shift(1)
+        trailing_candidates = df[df['higher_low']]['prev_low']
+
+        if not trailing_candidates.empty:
+            new_sl = trailing_candidates.max() - (self.sl_coef.value * avg_range)
+            if new_sl > sl_price:
+                sl_price = new_sl
+
+        sl_percentage = (sl_price / current_rate) - 1
+        return max(sl_percentage, -0.99)
+
+    def timeframe_to_minutes(self, tf: str) -> int:
+        if tf.endswith('m'):
+            return int(tf[:-1])
+        elif tf.endswith('h'):
+            return int(tf[:-1]) * 60
+        elif tf.endswith('d'):
+            return int(tf[:-1]) * 1440
+        return 0
