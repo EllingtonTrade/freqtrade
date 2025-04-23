@@ -12,14 +12,13 @@ class AroonRsiStrategy(IStrategy):
     use_custom_exit = True
     custom_stop = {}
 
-    # === Hyperoptable parameters ===
     trailing_sl_threshold = DecimalParameter(0.0, 4.0, decimals=1, default=1.2, space='buy')
     sl_coef = DecimalParameter(0.0, 4.0, decimals=1, default=1.9, space='buy')
     tp_threshold = DecimalParameter(0.5, 4.0, decimals=1, default=1.0, space='buy')
     
-    risk_exposure = 0.05 # 1%
+    risk_exposure = 0.05
 
-    minimal_roi = { "0": 100 }
+    minimal_roi = {"0": 100}
     stoploss = -0.99
 
     plot_config = {
@@ -37,11 +36,11 @@ class AroonRsiStrategy(IStrategy):
                 'aroon_up': {'color': 'green', 'linewidth': 1},
                 'aroon_down': {'color': 'red', 'linewidth': 1}
             },
-             "buy_sell_plot": {
+            "buy_sell_plot": {
                 "enter_long": {"color": "green", "marker": "v", "markersize": 10},
                 "exit_long": {"color": "red", "marker": "^", "markersize": 10},
             },
-             "stop_loss_roi_plot": {
+            "stop_loss_roi_plot": {
                 "stop_loss": {"color": "orange", "linewidth": 1, "linestyle": "--"},
                 "roi": {"color": "purple", "linewidth": 1, "linestyle": ":"}
             }
@@ -60,7 +59,7 @@ class AroonRsiStrategy(IStrategy):
         dataframe['avg_range'] = (dataframe['high'] - dataframe['low']).rolling(window=30).mean()
         dataframe['higher_low'] = dataframe['low'] > dataframe['low'].shift(1)
         dataframe['bb_break_low'] = dataframe['close'] < dataframe['bb_lower']
-        dataframe['trailing_sl'] = np.nan  # Placeholder for plot/debug
+        dataframe['trailing_sl'] = np.nan
 
         return dataframe
 
@@ -70,7 +69,13 @@ class AroonRsiStrategy(IStrategy):
             (dataframe['aroon_up'] > 80) &
             (dataframe['aroon_down'] < 50)
         ).astype('int')
-        dataframe['enter_short'] = 0
+
+        dataframe['enter_short'] = (
+            (dataframe['rsi'] < 30) &
+            (dataframe['aroon_up'] < 50) &
+            (dataframe['aroon_down'] > 80)
+        ).astype('int')
+
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
@@ -92,8 +97,12 @@ class AroonRsiStrategy(IStrategy):
 
         min_profit = self.tp_threshold.value * avg_range / trade.open_rate
 
-        if current_profit >= min_profit and last_row['close'] > last_row['bb_upper']:
-            return 'bb_tp'
+        if trade.is_short:
+            if current_profit >= min_profit and last_row['close'] < last_row['bb_lower']:
+                return 'short_tp_bb'
+        else:
+            if current_profit >= min_profit and last_row['close'] > last_row['bb_upper']:
+                return 'long_tp_bb'
 
         return None
 
@@ -109,11 +118,14 @@ class AroonRsiStrategy(IStrategy):
         if avg_range == 0 or np.isnan(avg_range):
             return -0.99
 
-        sl_price = trade.open_rate - self.sl_coef.value * avg_range
+        if trade.is_short:
+            sl_price = trade.open_rate + self.sl_coef.value * avg_range
+        else:
+            sl_price = trade.open_rate - self.sl_coef.value * avg_range
 
         profit_trigger = self.trailing_sl_threshold.value * avg_range / trade.open_rate
         if current_profit < profit_trigger:
-            sl_percentage = (sl_price / current_rate) - 1
+            sl_percentage = (sl_price / current_rate - 1) if trade.is_short else (sl_price / current_rate) - 1
             return max(sl_percentage, -0.99)
 
         df = df[df['date'] >= trade.open_date_utc + pd.Timedelta(minutes=self.timeframe_to_minutes(self.timeframe))].copy()
@@ -122,11 +134,16 @@ class AroonRsiStrategy(IStrategy):
         trailing_candidates = df[df['higher_low']]['prev_low']
 
         if not trailing_candidates.empty:
-            new_sl = trailing_candidates.max() - (self.sl_coef.value * avg_range)
-            if new_sl > sl_price:
-                sl_price = new_sl
+            if trade.is_short:
+                new_sl = trailing_candidates.min() + (self.sl_coef.value * avg_range)
+                if new_sl < sl_price:
+                    sl_price = new_sl
+            else:
+                new_sl = trailing_candidates.max() - (self.sl_coef.value * avg_range)
+                if new_sl > sl_price:
+                    sl_price = new_sl
 
-        sl_percentage = (sl_price / current_rate) - 1
+        sl_percentage = (sl_price / current_rate - 1) if trade.is_short else (sl_price / current_rate) - 1
         return max(sl_percentage, -0.99)
 
     def timeframe_to_minutes(self, tf: str) -> int:
@@ -151,6 +168,5 @@ class AroonRsiStrategy(IStrategy):
             return proposed_stake
 
         balance = self.wallets.get_total(self.config['stake_currency'])
-
         stake = (self.risk_exposure * balance * current_rate) / avg_range
         return stake
