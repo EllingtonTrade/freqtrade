@@ -3,20 +3,27 @@ from pandas import DataFrame
 import talib.abstract as ta
 import numpy as np
 import pandas as pd
+from typing import Optional
 
+
+
+import logging
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.DEBUG)
 
 class AroonRsiStrategy(IStrategy):
     timeframe = '1h'
-    can_short = True
+    can_short = False
     use_custom_stoploss = True
     use_custom_exit = True
     custom_stop = {}
 
-    trailing_sl_threshold = DecimalParameter(0.0, 4.0, decimals=1, default=1.2, space='buy')
-    sl_coef = DecimalParameter(0.0, 4.0, decimals=1, default=1.9, space='buy')
-    tp_threshold = DecimalParameter(0.5, 4.0, decimals=1, default=1.0, space='buy')
+    trailing_sl_threshold = DecimalParameter(0.0, 4.0, decimals=1, default=0.6, space='buy')
+    sl_coef = DecimalParameter(0.0, 4.0, decimals=1, default=2.2, space='buy')
+    tp_threshold = DecimalParameter(0.5, 4.0, decimals=1, default=3.8, space='buy')
     
-    risk_exposure = 0.05
+    risk_exposure = 0.01
 
     minimal_roi = {"0": 100}
     stoploss = -0.99
@@ -98,10 +105,10 @@ class AroonRsiStrategy(IStrategy):
         min_profit = self.tp_threshold.value * avg_range / trade.open_rate
 
         if trade.is_short:
-            if current_profit >= min_profit and last_row['close'] < last_row['bb_lower']:
+            if current_profit >= min_profit and current_rate < last_row['bb_lower']:
                 return 'short_tp_bb'
         else:
-            if current_profit >= min_profit and last_row['close'] > last_row['bb_upper']:
+            if current_profit >= min_profit and current_rate > last_row['bb_upper']:
                 return 'long_tp_bb'
 
         return None
@@ -155,18 +162,57 @@ class AroonRsiStrategy(IStrategy):
             return int(tf[:-1]) * 1440
         return 0
 
-    def custom_stake_amount(self, pair: str, current_time, current_rate, proposed_stake: float, **kwargs) -> float:
-        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+
+
+    def custom_stake_amount(self, pair: str, current_time, current_rate: float,
+                            proposed_stake: float, min_stake: Optional[float] = None,
+                            max_stake: Optional[float] = None, leverage: float = 1.0,
+                            entry_tag: Optional[str] = None, side: str = 'long',
+                            **kwargs) -> float:
+
+        dataframe, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.timeframe)
         df = dataframe[dataframe['date'] <= current_time]
 
         if df.empty:
+            logger.debug(f"[{pair}] No data available up to {current_time}. Using proposed stake: {proposed_stake}")
             return proposed_stake
 
         last_row = df.iloc[-1]
-        avg_range = last_row['avg_range']
-        if avg_range == 0 or np.isnan(avg_range):
+        avg_range = last_row.get('avg_range', None)
+        if avg_range is None or avg_range == 0 or np.isnan(avg_range):
+            logger.debug(f"[{pair}] Invalid avg_range ({avg_range}). Using proposed stake: {proposed_stake}")
             return proposed_stake
 
-        balance = self.wallets.get_total(self.config['stake_currency'])
-        stake = (self.risk_exposure * balance * current_rate) / avg_range
-        return stake
+        entry_price = current_rate
+        stop_loss_distance = self.sl_coef.value * avg_range
+        loss_per_unit = stop_loss_distance / entry_price
+
+        if loss_per_unit <= 0:
+            logger.debug(f"[{pair}] Non-positive loss per unit ({loss_per_unit}). Using proposed stake: {proposed_stake}")
+            return proposed_stake
+
+        wallet_balance = self.wallets.get_total(self.config['stake_currency'])
+
+        stake_amount = (self.risk_exposure * wallet_balance) / loss_per_unit
+
+        # Respect min/max stake limits
+        if min_stake is not None:
+            stake_amount = max(stake_amount, min_stake)
+        if max_stake is not None:
+            stake_amount = min(stake_amount, max_stake)
+
+        logger.debug(
+            f"[{pair}] custom_stake_amount calculation:\n"
+            f"  Current Time: {current_time}\n"
+            f"  Entry Price: {entry_price}\n"
+            f"  Avg Range: {avg_range}\n"
+            f"  Stop Loss Distance: {stop_loss_distance}\n"
+            f"  Loss per Unit: {loss_per_unit}\n"
+            f"  Wallet Balance: {wallet_balance}\n"
+            f"  Calculated Stake Amount: {stake_amount}\n"
+            f"  Min Stake: {min_stake}, Max Stake: {max_stake}"
+        )
+
+        return stake_amount
+
+
