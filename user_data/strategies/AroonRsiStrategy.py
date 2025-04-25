@@ -14,16 +14,16 @@ logging.basicConfig(level=logging.DEBUG)
 
 class AroonRsiStrategy(IStrategy):
     timeframe = '1h'
-    can_short = False
+    can_short = True
     use_custom_stoploss = True
     use_custom_exit = True
     custom_stop = {}
 
-    trailing_sl_threshold = DecimalParameter(0.0, 4.0, decimals=1, default=0.6, space='buy')
-    sl_coef = DecimalParameter(0.0, 4.0, decimals=1, default=2.2, space='buy')
-    tp_threshold = DecimalParameter(0.5, 4.0, decimals=1, default=3.8, space='buy')
+    trailing_sl_threshold = DecimalParameter(0.0, 4.0, decimals=1, default=2.9, space='buy') #0.6
+    sl_coef = DecimalParameter(0.0, 4.0, decimals=1, default=2.6, space='buy') #2.2
+    tp_threshold = DecimalParameter(0.5, 4.0, decimals=1, default=3.3, space='buy') #3.8
     
-    risk_exposure = 0.01
+    risk_exposure = 0.005
 
     minimal_roi = {"0": 100}
     stoploss = -0.99
@@ -126,9 +126,9 @@ class AroonRsiStrategy(IStrategy):
             return -0.99
 
         if trade.is_short:
-            sl_price = trade.open_rate + self.sl_coef.value * avg_range
+            sl_price = entry_candle['high'] + self.sl_coef.value * avg_range
         else:
-            sl_price = trade.open_rate - self.sl_coef.value * avg_range
+            sl_price = entry_candle['low'] - self.sl_coef.value * avg_range
 
         profit_trigger = self.trailing_sl_threshold.value * avg_range / trade.open_rate
         if current_profit < profit_trigger:
