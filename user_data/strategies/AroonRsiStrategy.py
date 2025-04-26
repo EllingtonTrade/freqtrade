@@ -18,12 +18,13 @@ class AroonRsiStrategy(IStrategy):
     use_custom_stoploss = True
     use_custom_exit = True
     custom_stop = {}
+    #leverage = 10
 
-    trailing_sl_threshold = DecimalParameter(0.0, 4.0, decimals=1, default=2.9, space='buy') #0.6
-    sl_coef = DecimalParameter(0.0, 4.0, decimals=1, default=2.6, space='buy') #2.2
-    tp_threshold = DecimalParameter(0.5, 4.0, decimals=1, default=3.3, space='buy') #3.8
+    trailing_sl_threshold = DecimalParameter(0.0, 3.0, decimals=1, default=1.7, space='buy') #0.6
+    sl_coef = DecimalParameter(0.0, 3.0, decimals=1, default=0.8, space='buy') #2.2
+    tp_threshold = DecimalParameter(3.0, 8.0, decimals=1, default=3.6, space='buy') #3.8
     
-    risk_exposure = 0.005
+    risk_exposure = 0.02
 
     minimal_roi = {"0": 100}
     stoploss = -0.99
@@ -63,7 +64,7 @@ class AroonRsiStrategy(IStrategy):
         bb = ta.BBANDS(dataframe['close'], timeperiod=20, nbdevup=2.0, nbdevdn=2.0)
         dataframe['bb_upper'], dataframe['bb_middle'], dataframe['bb_lower'] = bb
 
-        dataframe['avg_range'] = (dataframe['high'] - dataframe['low']).rolling(window=30).mean()
+        dataframe['avg_range'] = (dataframe['high'] - dataframe['low']).rolling(window=8).mean()
         dataframe['higher_low'] = dataframe['low'] > dataframe['low'].shift(1)
         dataframe['bb_break_low'] = dataframe['close'] < dataframe['bb_lower']
         dataframe['trailing_sl'] = np.nan
@@ -142,11 +143,11 @@ class AroonRsiStrategy(IStrategy):
 
         if not trailing_candidates.empty:
             if trade.is_short:
-                new_sl = trailing_candidates.min() + (self.sl_coef.value * avg_range)
+                new_sl = trailing_candidates.min() #+ (self.sl_coef.value * avg_range)
                 if new_sl < sl_price:
                     sl_price = new_sl
             else:
-                new_sl = trailing_candidates.max() - (self.sl_coef.value * avg_range)
+                new_sl = trailing_candidates.max() #- (self.sl_coef.value * avg_range)
                 if new_sl > sl_price:
                     sl_price = new_sl
 
