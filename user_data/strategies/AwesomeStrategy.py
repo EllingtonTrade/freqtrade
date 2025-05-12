@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
-
+## HATEF terst strategy
 def view(df, output_path=None):
     """
     Visualizes the candlestick chart with EMA lines and entry/exit points.
