@@ -23,16 +23,32 @@ class TwoEmaCrossLongOnly(IStrategy):
     minimal_roi = {"0": 100}
     stoploss = -0.99
 
+    plot_config = {
+        'main_plot': {
+            'fast_ema': {'color': 'blue'},
+            'slow_ema': {'color': 'red'},
+            'atr': {'color': 'green'},
+        },
+        'subplots': {
+            'RSI': {
+                'rsi': {'color': 'purple'},
+            }
+        }
+    }
+
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         dataframe['fast_ema'] = ta.EMA(dataframe['close'], timeperiod=int(self.fast_ema_period.value))
         dataframe['slow_ema'] = ta.EMA(dataframe['close'], timeperiod=int(self.slow_ema_period.value))
         dataframe['rsi'] = ta.RSI(dataframe['close'], timeperiod=int(self.rsi_period.value))
         dataframe['atr'] = ta.ATR(dataframe['high'], dataframe['low'], dataframe['close'], timeperiod=int(self.atr_period.value))
+        dataframe['ema_diff'] = dataframe['fast_ema'] - dataframe['slow_ema']
+        dataframe['ema_diff_prev'] = dataframe['ema_diff'].shift(1).fillna(0)
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         dataframe['enter_long'] = (
-            (dataframe['fast_ema'] > dataframe['slow_ema']) &
+            (dataframe['ema_diff_prev'] <= 0) &
+            (dataframe['ema_diff'] > 0) &
             (dataframe['rsi'] > self.rsi_threshold.value)
         ).astype('int')
         return dataframe
@@ -53,6 +69,9 @@ class TwoEmaCrossLongOnly(IStrategy):
 
         sl_price = trade.open_rate - (self.sl_coef.value * atr_value)
         tp_price = trade.open_rate + (self.tp_coef.value * atr_value)
+
+        if current_profit >= self.tp_coef.value * atr_value / trade.open_rate:
+            return 0  # Take Profit reached
 
         if current_profit > 0.01:
             new_sl = current_rate - (self.trailing_sl_threshold.value * atr_value)
