@@ -1,140 +1,98 @@
-from freqtrade.strategy import IStrategy, DecimalParameter
+from freqtrade.strategy import IStrategy
 from pandas import DataFrame
 import talib.abstract as ta
 import numpy as np
 import pandas as pd
-from typing import Optional
 
 class TwoEmaCrossLongOnly(IStrategy):
-    timeframe = '1h'
+    # --- Required settings ---
+    minimal_roi = {"0": 1.0}  # Not used, as we apply custom exit
+    stoploss = -1.0           # Custom stoploss logic is used
+    trailing_stop = False     # Trailing is handled manually
+    timeframe = '1h'    
     can_short = False
-    use_custom_stoploss = True
-    use_custom_exit = True
 
-    # Strategy Parameters
-    fast_ema_period = 15
-    slow_ema_period = 30
+    # --- Strategy Parameters ---
+    fast_ema = 15
+    slow_ema = 30
     atr_period = 30
     sl_coef = 1
     tp_coef = 5
     rsi_period = 14
-    rsi_threshold = 65.0
+    rsi_threshold = 65
 
-    # Minimal ROI and Stoploss (dummy values as we use custom stoploss)
-    minimal_roi = {"0": 100}
-    stoploss = -0.99
+    def populate_indicators(self, df: DataFrame, metadata: dict) -> DataFrame:
+        df['ema_fast'] = ta.EMA(df['close'], timeperiod=self.fast_ema)
+        df['ema_slow'] = ta.EMA(df['close'], timeperiod=self.slow_ema)
+        df['rsi'] = ta.RSI(df['close'], timeperiod=self.rsi_period)
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.custom_stop = {}
+        high_low = df['high'] - df['low']
+        high_close = np.abs(df['high'] - df['close'].shift())
+        low_close = np.abs(df['low'] - df['close'].shift())
+        tr = np.maximum.reduce([high_low, high_close, low_close])
+        df['atr'] = pd.Series(tr).rolling(window=self.atr_period).mean()
+
+        # Plotting data for TP, SL, entry, and exit
+        df['entry'] = np.nan
+        df['exit'] = np.nan
+        df['tp'] = np.nan
+        df['sl'] = np.nan
+
+        return df
+
+    def populate_entry_trend(self, df: DataFrame, metadata: dict) -> DataFrame:
+        entry_condition = (df['ema_fast'] > df['ema_slow']) & (df['rsi'] > self.rsi_threshold)
+        df.loc[entry_condition, 'enter_long'] = 1
+        df.loc[entry_condition, 'entry'] = df['close']
+        return df
 
 
-    def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        # EMA Indicators
-        dataframe['fast_ema'] = ta.EMA(dataframe['close'], timeperiod=int(self.fast_ema_period))
-        dataframe['slow_ema'] = ta.EMA(dataframe['close'], timeperiod=int(self.slow_ema_period))
+    def populate_exit_trend(self, df: DataFrame, metadata: dict) -> DataFrame:
+        # We exit manually via custom_exit
+        df['exit_long'] = 0
+        return df
 
-        # ATR Indicator
-        atr = ta.ATR(dataframe['high'], dataframe['low'], dataframe['close'], timeperiod=int(self.atr_period))
-        dataframe['atr'] = atr
+    def custom_stoploss(self, pair: str, trade, current_time, current_rate, current_profit, **kwargs):
+        df, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+        if df is None or df.empty:
+            return 1
 
-        # RSI Indicator
-        dataframe['rsi'] = ta.RSI(dataframe['close'], timeperiod=int(self.rsi_period))
-
-        # EMA Difference for Crossover Detection
-        dataframe['ema_diff'] = dataframe['fast_ema'] - dataframe['slow_ema']
-        dataframe['ema_diff_prev'] = dataframe['ema_diff'].shift(1)
-
-        return dataframe
-
-    def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        # Long entry on EMA crossover (fast crosses above slow) and RSI above threshold
-        dataframe['enter_long'] = (
-            (dataframe['ema_diff'] > 0) &
-            (dataframe['rsi'] > self.rsi_threshold)
-        ).astype('int')
-
-        return dataframe
-
-    def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        # Exit on opposite EMA crossover or price below slow EMA
-        dataframe['exit_long'] = (
-            (dataframe['ema_diff'] < 0) |
-            (dataframe['close'] < dataframe['slow_ema'])
-        ).astype('int')
-
-        return dataframe
+        ema = df.iloc[-1]['ema_slow']
+        if current_rate <= ema:
+            return 0.01  # trigger stoploss now
+        return 1
 
     def custom_exit(self, pair: str, trade, current_time, current_rate, current_profit, **kwargs):
-        # Access the stored TP from the trade metadata
-        tp_price = self.custom_stop.get(pair, {}).get('tp_price', None)
+        df, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+        if df is None or df.empty:
+            return None
 
-        # Check if TP is set and hit
-        if tp_price is not None:
-            if current_rate >= tp_price:
-                return 'TP hit'  # Signal to close the trade
+        if not trade.enter_tag:
+            atr = df.iloc[-1]['atr']
+            sl = trade.open_rate - self.sl_coef * atr
+            tp = trade.open_rate + self.tp_coef * atr
+            trade.enter_tag = f"{sl},{tp}"
+            df.loc[df.index[-1], 'tp'] = tp
+            df.loc[df.index[-1], 'sl'] = sl
+
+        sl, tp = map(float, trade.enter_tag.split(','))
+        if current_rate <= sl:
+            df.loc[df.index[-1], 'exit'] = current_rate
+            return 'atr_stoploss', 0.01
+        elif current_rate >= tp:
+            df.loc[df.index[-1], 'exit'] = current_rate
+            return 'atr_takeprofit', 0.01
 
         return None
-
-    def custom_stoploss(self, pair: str, trade, current_time, current_rate, current_profit, **kwargs) -> float:
-        # Get the analyzed dataframe for the pair and timeframe
-        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
-        if dataframe.empty:
-            return -0.99
-
-        # Get the latest data for ATR and Slow EMA
-        last_row = dataframe.iloc[-1]
-        atr_value = last_row['atr']
-        slow_ema = last_row['slow_ema']
-
-        if atr_value == 0 or np.isnan(atr_value) or np.isnan(slow_ema):
-            return -0.99
-
-        # Calculate initial SL and TP based on ATR
-        sl_price = trade.open_rate - (self.sl_coef * atr_value)
-        tp_price = trade.open_rate + (self.tp_coef * atr_value)
-
-        # Dynamic SL based on Slow EMA
-        if slow_ema > sl_price:
-            sl_price = slow_ema
-
-        # Take profit condition
-        if current_rate >= tp_price:
-            return 0  # Close the trade when TP is hit
-
-        # Calculate the stop loss percentage
-        sl_percentage = (sl_price / current_rate) - 1
-        return max(sl_percentage, -0.99)
-
-    def custom_stake_amount(self, pair: str, current_time, current_rate: float,
-                            proposed_stake: float, min_stake: Optional[float] = None,
-                            max_stake: Optional[float] = None, leverage: float = 1.0,
-                            entry_tag: Optional[str] = None, side: str = 'long',
-                            **kwargs) -> float:
-        wallet_balance = self.wallets.get_total(self.config['stake_currency'])
-        risk_amount = wallet_balance * (2 / 100)
-
-        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
-        if dataframe.empty:
-            return proposed_stake
-
-        # Get the ATR value
-        atr_value = dataframe['atr'].iloc[-1]
-        stop_loss_distance = (self.sl_coef * atr_value) / current_rate
-        position_size = risk_amount / stop_loss_distance
-
-        # Calculate ATR-based TP and store it in the trade metadata
-        tp_price = current_rate + (self.tp_coef * atr_value)
-        self.custom_stop[pair] = {'tp_price': tp_price}
-
-        # Apply min and max stake limits
-        stake_amount = max(min(position_size, max_stake if max_stake else float('inf')), min_stake if min_stake else 0)
-        return stake_amount
-
     plot_config = {
-        'main_plot': {
-            'fast_ema': {'color': 'blue'},
-            'slow_ema': {'color': 'red'}
+    'main_plot': {
+            'close': {'color': 'black'},
+            'ema_fast': {'color': 'blue'},
+            'ema_slow': {'color': 'red'},
+            'entry': {'color': 'green', 'type': 'scatter', 'plotly': {'mode': 'markers'}},
+            'exit': {'color': 'red', 'type': 'scatter', 'plotly': {'mode': 'markers'}},
+            'tp': {'color': 'gold', 'type': 'scatter', 'plotly': {'mode': 'markers'}},
+            'sl': {'color': 'orange', 'type': 'scatter', 'plotly': {'mode': 'markers'}}
         },
         'subplots': {
             "RSI": {
@@ -144,4 +102,4 @@ class TwoEmaCrossLongOnly(IStrategy):
                 'atr': {'color': 'green'}
             }
         }
-    }
+        }
